@@ -19,6 +19,7 @@ The CLI accepts the lowercase names of `AttentionBackendEnum`. The table below l
 | CLI value | Enum value | Notes |
 |---|---|---|
 | `fa` / `fa3` / `fa4` | `FA` | FlashAttention. `fa3/fa4` are normalized to `fa` during argument parsing (`ServerArgs.__post_init__`). |
+| `lite_attn` | `LITE_ATTN` | LiteAttention (FA3 wrapper with skip optimization). Requires `lite_attention` (Hopper build). |
 | `torch_sdpa` | `TORCH_SDPA` | PyTorch `scaled_dot_product_attention`. |
 | `sliding_tile_attn` | `SLIDING_TILE_ATTN` | Sliding Tile Attention (STA). Requires `st_attn` and a mask-strategy config file set via the `SGLANG_DIFFUSION_ATTENTION_CONFIG` environment variable. |
 | `sage_attn` | `SAGE_ATTN` | Requires `sageattention`. Upstream SageAttention CUDA extensions target SM80/SM86/SM89/SM90/SM120 (compute capability 8.0/8.6/8.9/9.0/12.0); see upstream `setup.py`: https://github.com/thu-ml/SageAttention/blob/main/setup.py. |
@@ -40,6 +41,7 @@ The selection order in `runtime/layers/attention/selector.py` is:
 | Backend | CUDA | ROCm | MPS | Notes |
 |---|---:|---:|---:|---|
 | `fa` | ✅ | ✅ | ❌ | CUDA requires SM80+ and fp16/bf16. FlashAttention is only used when the required runtime is installed; otherwise it falls back to `torch_sdpa`. |
+| `lite_attn` | ✅ | ❌ | ❌ | CUDA-only (Hopper/H100 recommended). Requires `lite_attention`. |
 | `torch_sdpa` | ✅ | ✅ | ✅ | Most compatible option across platforms. |
 | `sliding_tile_attn` | ✅ | ❌ | ❌ | CUDA-only. Requires `st_attn` and `SGLANG_DIFFUSION_ATTENTION_CONFIG`. |
 | `sage_attn` | ✅ | ❌ | ❌ | CUDA-only (optional dependency). |
@@ -75,6 +77,26 @@ sglang generate \
   --model-path <MODEL_PATH_OR_ID> \
   --prompt "..." \
   --attention-backend sliding_tile_attn
+```
+
+### Using LiteAttention
+
+```bash
+sglang generate \
+  --model-path <MODEL_PATH_OR_ID> \
+  --prompt "..." \
+  --attention-backend lite_attn
+```
+
+Optional env vars for LiteAttention:
+
+```bash
+export SGLANG_DIFFUSION_LITE_ATTENTION_ENABLE_SKIPPING=true
+export SGLANG_DIFFUSION_LITE_ATTENTION_SKIP_ONLY_SELF_ATTN=true
+export SGLANG_DIFFUSION_LITE_ATTENTION_THRESHOLD=-10.0
+export SGLANG_DIFFUSION_LITE_ATTENTION_MAX_BATCH_SIZE=2
+export SGLANG_DIFFUSION_LITE_ATTENTION_REVERSE_SKIP_LIST=true
+export SGLANG_DIFFUSION_LITE_ATTENTION_USE_INT8=false
 ```
 
 ### Notes for ROCm / MPS

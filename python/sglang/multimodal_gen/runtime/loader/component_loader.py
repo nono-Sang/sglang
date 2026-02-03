@@ -7,6 +7,7 @@ import glob
 import importlib.util
 import json
 import os
+import re
 import traceback
 from abc import ABC
 from collections.abc import Generator, Iterable
@@ -45,11 +46,42 @@ from sglang.multimodal_gen.runtime.utils.hf_diffusers_utils import (
     get_config,
     get_diffusers_component_config,
     get_hf_config,
+    get_quant_config,
 )
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 from sglang.multimodal_gen.utils import PRECISION_TO_TYPE
 
 logger = init_logger(__name__)
+
+
+def _normalize_ignored_layers(
+    ignored_layers: list[str], param_names_mapping: dict
+) -> list[str]:
+    if not ignored_layers:
+        return []
+
+    normalized: list[str] = []
+    for layer_name in ignored_layers:
+        mapped = layer_name
+        matched = False
+        for pattern, repl in param_names_mapping.items():
+            if re.match(pattern, mapped):
+                mapped = re.sub(pattern, repl, mapped)
+                matched = True
+                break
+
+        if not matched:
+            probe = f"{mapped}.weight"
+            for pattern, repl in param_names_mapping.items():
+                if re.match(pattern, probe):
+                    mapped = re.sub(pattern, repl, probe)
+                    matched = True
+                    break
+
+        mapped = re.sub(r"\.(weight|bias)$", "", mapped)
+        normalized.append(mapped)
+
+    return list(dict.fromkeys(normalized))
 
 
 class skip_init_modules:
@@ -672,6 +704,8 @@ class TransformerLoader(ComponentLoader):
     ):
         """Load the transformer based on the model path, and inference args."""
         config = get_diffusers_component_config(model_path=component_model_path)
+        config["model_path"] = component_model_path
+        quant_config = get_quant_config(config)
         hf_config = deepcopy(config)
         cls_name = config.pop("_class_name")
         if cls_name is None:
@@ -685,6 +719,12 @@ class TransformerLoader(ComponentLoader):
         # Config from Diffusers supersedes sgl_diffusion's model config
         dit_config = server_args.pipeline_config.dit_config
         dit_config.update_model_arch(config)
+        dit_config.quant_config = quant_config
+
+        if quant_config is not None and hasattr(quant_config, "ignored_layers"):
+            quant_config.ignored_layers = _normalize_ignored_layers(
+                quant_config.ignored_layers, dit_config.arch_config.param_names_mapping
+            )
 
         model_cls, _ = ModelRegistry.resolve_model_cls(cls_name)
 

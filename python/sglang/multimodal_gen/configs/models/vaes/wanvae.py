@@ -76,11 +76,13 @@ class WanVAEArchConfig(VAEArchConfig):
 @dataclass
 class WanVAEConfig(VAEConfig):
     arch_config: WanVAEArchConfig = field(default_factory=WanVAEArchConfig)
-    use_feature_cache: bool = True
+    use_feature_cache: bool = True  # 关闭显存暴增
 
     use_tiling: bool = False
     use_temporal_tiling: bool = False
     use_parallel_tiling: bool = False
+    use_parallel_decode: bool = True
+    use_parallel_encode: bool = True
 
     def __post_init__(self):
         self.blend_num_frames = (

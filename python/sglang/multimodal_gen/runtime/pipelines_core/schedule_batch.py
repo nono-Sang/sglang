@@ -286,6 +286,8 @@ class Req:
                   image_path: {self.image_path}
                  save_output: {self.save_output}
             output_file_path: {self.output_file_path()}
+                  resolution: {self.resolution}
+                aspect_ratio: {self.aspect_ratio}
         """  # type: ignore[attr-defined]
         logger.info(debug_str)
 
@@ -297,6 +299,7 @@ class OutputBatch:
     """
 
     output: torch.Tensor | None = None
+    output_file_paths: list[str] | None = None
     trajectory_timesteps: list[torch.Tensor] | None = None
     trajectory_latents: torch.Tensor | None = None
     trajectory_decoded: list[torch.Tensor] | None = None

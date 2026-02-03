@@ -225,43 +225,71 @@ class DiffGenerator:
                     if output_batch.error:
                         raise Exception(f"{output_batch.error}")
 
-                    if output_batch.output is None:
+                    output_file_paths = getattr(output_batch, "output_file_paths", None)
+                    if output_batch.output is None and not output_file_paths:
                         logger.error(
                             "Received empty output from scheduler for prompt %d",
                             request_idx + 1,
                         )
                         continue
-                    for output_idx, sample in enumerate(output_batch.output):
-                        num_outputs = len(output_batch.output)
-                        frames = post_process_sample(
-                            sample,
-                            fps=req.fps,
-                            save_output=req.save_output,
-                            # TODO: output file path for req should be determined
-                            save_file_path=req.output_file_path(
-                                num_outputs, output_idx
-                            ),
-                            data_type=req.data_type,
-                        )
+                    if output_batch.output is None and output_file_paths:
+                        for output_idx, output_path in enumerate(output_file_paths):
+                            result_item: dict[str, Any] = {
+                                "samples": None,
+                                "frames": None,
+                                "output_file_path": output_path,
+                                "prompts": req.prompt,
+                                "size": (req.height, req.width, req.num_frames),
+                                "generation_time": timer.duration,
+                                "peak_memory_mb": output_batch.peak_memory_mb,
+                                "timings": (
+                                    output_batch.timings.to_dict()
+                                    if output_batch.timings
+                                    else {}
+                                ),
+                                "trajectory": output_batch.trajectory_latents,
+                                "trajectory_timesteps": output_batch.trajectory_timesteps,
+                                "trajectory_decoded": output_batch.trajectory_decoded,
+                                "prompt_index": output_idx,
+                            }
+                            results.append(result_item)
+                    else:
+                        for output_idx, sample in enumerate(output_batch.output):
+                            num_outputs = len(output_batch.output)
+                            frames = post_process_sample(
+                                sample,
+                                fps=req.fps,
+                                save_output=req.save_output,
+                                # TODO: output file path for req should be determined
+                                save_file_path=req.output_file_path(
+                                    num_outputs, output_idx
+                                ),
+                                data_type=req.data_type,
+                            )
 
-                        result_item: dict[str, Any] = {
-                            "samples": sample,
-                            "frames": frames,
-                            "prompts": req.prompt,
-                            "size": (req.height, req.width, req.num_frames),
-                            "generation_time": timer.duration,
-                            "peak_memory_mb": output_batch.peak_memory_mb,
-                            "timings": (
-                                output_batch.timings.to_dict()
-                                if output_batch.timings
-                                else {}
-                            ),
-                            "trajectory": output_batch.trajectory_latents,
-                            "trajectory_timesteps": output_batch.trajectory_timesteps,
-                            "trajectory_decoded": output_batch.trajectory_decoded,
-                            "prompt_index": output_idx,
-                        }
-                        results.append(result_item)
+                            result_item: dict[str, Any] = {
+                                "samples": sample,
+                                "frames": frames,
+                                "output_file_path": (
+                                    output_file_paths[output_idx]
+                                    if output_file_paths
+                                    else None
+                                ),
+                                "prompts": req.prompt,
+                                "size": (req.height, req.width, req.num_frames),
+                                "generation_time": timer.duration,
+                                "peak_memory_mb": output_batch.peak_memory_mb,
+                                "timings": (
+                                    output_batch.timings.to_dict()
+                                    if output_batch.timings
+                                    else {}
+                                ),
+                                "trajectory": output_batch.trajectory_latents,
+                                "trajectory_timesteps": output_batch.trajectory_timesteps,
+                                "trajectory_decoded": output_batch.trajectory_decoded,
+                                "prompt_index": output_idx,
+                            }
+                            results.append(result_item)
             except Exception:
                 continue
 

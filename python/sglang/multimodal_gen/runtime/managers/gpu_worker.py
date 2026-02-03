@@ -18,6 +18,7 @@ from sglang.multimodal_gen.runtime.distributed.parallel_state import (
     get_cfg_group,
     get_tp_group,
 )
+from sglang.multimodal_gen.runtime.entrypoints.utils import post_process_sample
 from sglang.multimodal_gen.runtime.pipelines_core import (
     ComposedPipelineBase,
     LoRAPipeline,
@@ -69,7 +70,7 @@ class GPUWorker:
 
     def init_device_and_model(self) -> None:
         """Initialize the device and load the model."""
-        setproctitle(f"sgl_diffusion::scheduler_TP{self.local_rank}")
+        setproctitle(f"sgl_diffusion::scheduler_TP{self.rank}")
         torch.cuda.set_device(self.local_rank)
         # Set environment variables for distributed initialization
         os.environ["MASTER_ADDR"] = "localhost"
@@ -138,6 +139,8 @@ class GPUWorker:
             else:
                 output_batch = result
 
+            output_batch = self._finalize_output_batch(req, output_batch)
+
             if self.rank == 0:
                 peak_memory_bytes = torch.cuda.max_memory_allocated()
                 output_batch.peak_memory_mb = peak_memory_bytes / (1024**2)
@@ -168,8 +171,47 @@ class GPUWorker:
             if output_batch is None:
                 output_batch = OutputBatch()
             output_batch.error = f"Error executing request {req.request_id}: {e}"
-        finally:
+        return output_batch
+
+    def _finalize_output_batch(
+        self, req: Req, output_batch: OutputBatch
+    ) -> OutputBatch:
+        if output_batch is None or output_batch.output is None:
             return output_batch
+
+        output_paths: list[str] = []
+        if req.save_output:
+            output_paths = self._save_outputs_to_files(req, output_batch.output)
+
+        if output_paths:
+            output_batch.output_file_paths = output_paths
+            output_batch.output = None
+
+        return output_batch
+
+    def _save_outputs_to_files(self, req: Req, output) -> list[str]:
+        if isinstance(output, torch.Tensor):
+            samples = [output[i] for i in range(output.shape[0])]
+        elif isinstance(output, list):
+            samples = output
+        else:
+            return []
+
+        output_paths: list[str] = []
+        num_outputs = len(samples)
+        for idx, sample in enumerate(samples):
+            save_file_path = req.output_file_path(num_outputs, idx)
+            if not save_file_path:
+                continue
+            post_process_sample(
+                sample=sample,
+                data_type=req.data_type,
+                fps=req.fps or 24,
+                save_output=True,
+                save_file_path=save_file_path,
+            )
+            output_paths.append(save_file_path)
+        return output_paths
 
     def get_can_stay_resident_components(
         self, remaining_gpu_mem_gb: float
@@ -315,6 +357,7 @@ def run_scheduler_process(
         scheduler = Scheduler(
             server_args,
             gpu_id=rank,
+            local_rank=local_rank,
             port_args=port_args,
             task_pipes_to_slaves=task_pipes_to_slaves,
             result_pipes_from_slaves=result_pipes_from_slaves,

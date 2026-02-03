@@ -11,6 +11,12 @@ import torch.nn as nn
 from sglang.multimodal_gen.configs.models.dits import WanVideoConfig
 from sglang.multimodal_gen.configs.sample.wan import WanTeaCacheParams
 from sglang.multimodal_gen.runtime.distributed import divide
+from sglang.multimodal_gen.runtime.distributed.communication_op import (
+    sequence_model_parallel_all_gather,  # NOTE: used for sequence shard
+)
+from sglang.multimodal_gen.runtime.distributed.parallel_state import (
+    get_sp_group,  # NOTE: used for sequence shard
+)
 from sglang.multimodal_gen.runtime.distributed.parallel_state import (
     get_sp_world_size,
     get_tensor_model_parallel_world_size,
@@ -33,6 +39,7 @@ from sglang.multimodal_gen.runtime.layers.linear import (
     RowParallelLinear,
 )
 from sglang.multimodal_gen.runtime.layers.mlp import MLP
+from sglang.multimodal_gen.runtime.layers.quantization import QuantizationConfig
 from sglang.multimodal_gen.runtime.layers.rotary_embedding import (
     NDRotaryEmbedding,
     _apply_rotary_emb,
@@ -127,6 +134,7 @@ class WanSelfAttention(nn.Module):
         eps=1e-6,
         parallel_attention=False,
         supported_attention_backends: set[AttentionBackendEnum] | None = None,
+        quant_config: QuantizationConfig | None = None,
     ) -> None:
         assert dim % num_heads == 0
         super().__init__()
@@ -140,10 +148,18 @@ class WanSelfAttention(nn.Module):
         self.tp_size = get_tensor_model_parallel_world_size()
 
         # layers
-        self.to_q = ColumnParallelLinear(dim, dim, gather_output=False)
-        self.to_k = ColumnParallelLinear(dim, dim, gather_output=False)
-        self.to_v = ColumnParallelLinear(dim, dim, gather_output=False)
-        self.to_out = RowParallelLinear(dim, dim, input_is_parallel=True)
+        self.to_q = ColumnParallelLinear(
+            dim, dim, gather_output=False, quant_config=quant_config
+        )
+        self.to_k = ColumnParallelLinear(
+            dim, dim, gather_output=False, quant_config=quant_config
+        )
+        self.to_v = ColumnParallelLinear(
+            dim, dim, gather_output=False, quant_config=quant_config
+        )
+        self.to_out = RowParallelLinear(
+            dim, dim, input_is_parallel=True, quant_config=quant_config
+        )
         self.norm_q = RMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
         self.norm_k = RMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
         self.tp_rmsnorm = self.tp_size > 1 and qk_norm
@@ -217,6 +233,7 @@ class WanI2VCrossAttention(WanSelfAttention):
         qk_norm=True,
         eps=1e-6,
         supported_attention_backends: set[AttentionBackendEnum] | None = None,
+        quant_config: QuantizationConfig | None = None,
     ) -> None:
         # VSA should not be in supported_attention_backends
         super().__init__(
@@ -228,8 +245,12 @@ class WanI2VCrossAttention(WanSelfAttention):
             supported_attention_backends=supported_attention_backends,
         )
 
-        self.add_k_proj = ColumnParallelLinear(dim, dim, gather_output=False)
-        self.add_v_proj = ColumnParallelLinear(dim, dim, gather_output=False)
+        self.add_k_proj = ColumnParallelLinear(
+            dim, dim, gather_output=False, quant_config=quant_config
+        )
+        self.add_v_proj = ColumnParallelLinear(
+            dim, dim, gather_output=False, quant_config=quant_config
+        )
         self.norm_added_k = RMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
 
     def forward(self, x, context, context_lens):
@@ -297,16 +318,25 @@ class WanTransformerBlock(nn.Module):
         prefix: str = "",
         attention_type: str = "original",
         sla_topk: float = 0.1,
+        quant_config: QuantizationConfig | None = None,
     ):
         super().__init__()
 
         # 1. Self-attention
         self.norm1 = FP32LayerNorm(dim, eps, elementwise_affine=False)
-        self.to_q = ColumnParallelLinear(dim, dim, bias=True, gather_output=False)
-        self.to_k = ColumnParallelLinear(dim, dim, bias=True, gather_output=False)
-        self.to_v = ColumnParallelLinear(dim, dim, bias=True, gather_output=False)
+        self.to_q = ColumnParallelLinear(
+            dim, dim, bias=True, gather_output=False, quant_config=quant_config
+        )
+        self.to_k = ColumnParallelLinear(
+            dim, dim, bias=True, gather_output=False, quant_config=quant_config
+        )
+        self.to_v = ColumnParallelLinear(
+            dim, dim, bias=True, gather_output=False, quant_config=quant_config
+        )
 
-        self.to_out = RowParallelLinear(dim, dim, bias=True, reduce_results=True)
+        self.to_out = RowParallelLinear(
+            dim, dim, bias=True, reduce_results=True, quant_config=quant_config
+        )
         if attention_type in ("sla", "sagesla"):
             self.attn1 = MinimalA2AAttnOp(
                 num_heads=divide(num_heads, get_tensor_model_parallel_world_size()),
@@ -360,6 +390,7 @@ class WanTransformerBlock(nn.Module):
                 qk_norm=qk_norm,
                 eps=eps,
                 supported_attention_backends=supported_attention_backends,
+                quant_config=quant_config,
             )
         else:
             # T2V
@@ -369,6 +400,7 @@ class WanTransformerBlock(nn.Module):
                 qk_norm=qk_norm,
                 eps=eps,
                 supported_attention_backends=supported_attention_backends,
+                quant_config=quant_config,
             )
         self.cross_attn_residual_norm = ScaleResidualLayerNormScaleShift(
             dim,
@@ -380,7 +412,9 @@ class WanTransformerBlock(nn.Module):
         )
 
         # 3. Feed-forward
-        self.ffn = MLP(dim, ffn_dim, act_type="gelu_pytorch_tanh")
+        self.ffn = MLP(
+            dim, ffn_dim, act_type="gelu_pytorch_tanh", quant_config=quant_config
+        )
         self.mlp_residual = ScaleResidual()
 
         self.scale_shift_table = nn.Parameter(torch.randn(1, 6, dim) / dim**0.5)
@@ -506,19 +540,28 @@ class WanTransformerBlock_VSA(nn.Module):
         added_kv_proj_dim: int | None = None,
         supported_attention_backends: set[AttentionBackendEnum] | None = None,
         prefix: str = "",
+        quant_config: QuantizationConfig | None = None,
     ):
         super().__init__()
 
         # 1. Self-attention
         self.norm1 = FP32LayerNorm(dim, eps, elementwise_affine=False)
-        self.to_q = ColumnParallelLinear(dim, dim, bias=True, gather_output=True)
-        self.to_k = ColumnParallelLinear(dim, dim, bias=True, gather_output=True)
-        self.to_v = ColumnParallelLinear(dim, dim, bias=True, gather_output=True)
+        self.to_q = ColumnParallelLinear(
+            dim, dim, bias=True, gather_output=True, quant_config=quant_config
+        )
+        self.to_k = ColumnParallelLinear(
+            dim, dim, bias=True, gather_output=True, quant_config=quant_config
+        )
+        self.to_v = ColumnParallelLinear(
+            dim, dim, bias=True, gather_output=True, quant_config=quant_config
+        )
         self.to_gate_compress = ColumnParallelLinear(
-            dim, dim, bias=True, gather_output=True
+            dim, dim, bias=True, gather_output=True, quant_config=quant_config
         )
 
-        self.to_out = ColumnParallelLinear(dim, dim, bias=True, gather_output=True)
+        self.to_out = ColumnParallelLinear(
+            dim, dim, bias=True, gather_output=True, quant_config=quant_config
+        )
         self.attn1 = UlyssesAttention_VSA(
             num_heads=num_heads,
             head_size=dim // num_heads,
@@ -560,6 +603,7 @@ class WanTransformerBlock_VSA(nn.Module):
                 qk_norm=qk_norm,
                 eps=eps,
                 supported_attention_backends=supported_attention_backends,
+                quant_config=quant_config,
             )
         else:
             # T2V
@@ -569,6 +613,7 @@ class WanTransformerBlock_VSA(nn.Module):
                 qk_norm=qk_norm,
                 eps=eps,
                 supported_attention_backends=supported_attention_backends,
+                quant_config=quant_config,
             )
         self.cross_attn_residual_norm = ScaleResidualLayerNormScaleShift(
             dim,
@@ -580,7 +625,9 @@ class WanTransformerBlock_VSA(nn.Module):
         )
 
         # 3. Feed-forward
-        self.ffn = MLP(dim, ffn_dim, act_type="gelu_pytorch_tanh")
+        self.ffn = MLP(
+            dim, ffn_dim, act_type="gelu_pytorch_tanh", quant_config=quant_config
+        )
         self.mlp_residual = ScaleResidual()
 
         self.scale_shift_table = nn.Parameter(torch.randn(1, 6, dim) / dim**0.5)
@@ -682,7 +729,12 @@ class WanTransformer3DModel(CachableDiT, OffloadableDiTMixin):
     reverse_param_names_mapping = WanVideoConfig().reverse_param_names_mapping
     lora_param_names_mapping = WanVideoConfig().lora_param_names_mapping
 
-    def __init__(self, config: WanVideoConfig, hf_config: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        config: WanVideoConfig,
+        hf_config: dict[str, Any],
+        quant_config: QuantizationConfig | None = None,
+    ) -> None:
         super().__init__(config=config, hf_config=hf_config)
 
         inner_dim = config.num_attention_heads * config.attention_head_dim
@@ -732,6 +784,7 @@ class WanTransformer3DModel(CachableDiT, OffloadableDiTMixin):
                     prefix=f"{config.prefix}.blocks.{i}",
                     attention_type=config.attention_type,
                     sla_topk=config.sla_topk,
+                    quant_config=config.quant_config,
                 )
                 for i in range(config.num_layers)
             ]
@@ -746,8 +799,14 @@ class WanTransformer3DModel(CachableDiT, OffloadableDiTMixin):
             dtype=torch.float32,
             compute_dtype=torch.float32,
         )
-        self.proj_out = nn.Linear(
-            inner_dim, config.out_channels * math.prod(config.patch_size)
+        # self.proj_out = nn.Linear(
+        #     inner_dim, config.out_channels * math.prod(config.patch_size)
+        # )
+        self.proj_out = ColumnParallelLinear(
+            inner_dim,
+            config.out_channels * math.prod(config.patch_size),
+            bias=True,
+            gather_output=True,
         )
         self.scale_shift_table = nn.Parameter(
             torch.randn(1, 2, inner_dim) / inner_dim**0.5
@@ -787,6 +846,14 @@ class WanTransformer3DModel(CachableDiT, OffloadableDiTMixin):
         **kwargs,
     ) -> torch.Tensor:
         forward_batch = get_forward_context().forward_batch
+        sp_shard_mode = (
+            getattr(forward_batch, "sp_shard_mode", None)
+            if forward_batch is not None
+            else None
+        )  # NOTE: used for sequence shard
+        sequence_shard_enabled = (
+            sp_shard_mode == "sequence" and self.sp_size > 1
+        )  # NOTE: used for sequence shard
         self.enable_teacache = (
             forward_batch is not None and forward_batch.enable_teacache
         )
@@ -809,25 +876,81 @@ class WanTransformer3DModel(CachableDiT, OffloadableDiTMixin):
         post_patch_height = height // p_h
         post_patch_width = width // p_w
 
-        # The rotary embedding layer correctly handles SP offsets internally.
-        freqs_cos, freqs_sin = self.rotary_emb.forward_from_grid(
-            (
-                post_patch_num_frames * self.sp_size,
-                post_patch_height,
-                post_patch_width,
-            ),
-            shard_dim=0,
-            start_frame=0,
-            device=hidden_states.device,
-        )
-        assert freqs_cos.dtype == torch.float32
-        assert freqs_cos.device == hidden_states.device
-        freqs_cis = (
-            (freqs_cos.float(), freqs_sin.float()) if freqs_cos is not None else None
-        )
+        # NOTE: used for sequence shard
+        if not sequence_shard_enabled:
+            # The rotary embedding layer correctly handles SP offsets internally.
+            freqs_cos, freqs_sin = self.rotary_emb.forward_from_grid(
+                (
+                    post_patch_num_frames * self.sp_size,
+                    post_patch_height,
+                    post_patch_width,
+                ),
+                shard_dim=0,
+                start_frame=0,
+                device=hidden_states.device,
+            )
+            assert freqs_cos.dtype == torch.float32
+            assert freqs_cos.device == hidden_states.device
+            freqs_cis = (
+                (freqs_cos.float(), freqs_sin.float())
+                if freqs_cos is not None
+                else None
+            )
 
         hidden_states = self.patch_embedding(hidden_states)
         hidden_states = hidden_states.flatten(2).transpose(1, 2)
+
+        # NOTE: used for sequence shard
+        seq_len_orig = hidden_states.shape[1]  # shape is [B, T' * H' * W', C]
+        seq_shard_pad = 0
+        if sequence_shard_enabled:
+            if seq_len_orig % self.sp_size != 0:
+                seq_shard_pad = self.sp_size - (seq_len_orig % self.sp_size)
+                pad = torch.zeros(
+                    (batch_size, seq_shard_pad, hidden_states.shape[2]),
+                    dtype=hidden_states.dtype,
+                    device=hidden_states.device,
+                )
+                hidden_states = torch.cat([hidden_states, pad], dim=1)
+            sp_rank = get_sp_group().rank_in_group
+            local_seq_len = hidden_states.shape[1] // self.sp_size
+            hidden_states = hidden_states.view(
+                batch_size, self.sp_size, local_seq_len, hidden_states.shape[2]
+            )
+            hidden_states = hidden_states[:, sp_rank, :, :]
+
+            @torch.compiler.disable
+            def _compute_rope_for_sequence_shard(
+                local_len: int,
+                rank: int,
+                frame_stride_local: int,
+                width_local: int,
+                device: torch.device,
+            ) -> tuple[torch.Tensor, torch.Tensor]:
+                token_start = rank * local_len
+                token_indices = torch.arange(
+                    token_start,
+                    token_start + local_len,
+                    device=device,
+                    dtype=torch.long,
+                )
+                t_idx = token_indices // frame_stride_local
+                rem = token_indices % frame_stride_local
+                h_idx = rem // width_local
+                w_idx = rem % width_local
+                positions = torch.stack((t_idx, h_idx, w_idx), dim=1)
+                return self.rotary_emb.forward_uncached(positions)
+
+            frame_stride = post_patch_height * post_patch_width
+            freqs_cos, freqs_sin = _compute_rope_for_sequence_shard(
+                local_seq_len,
+                sp_rank,
+                frame_stride,
+                post_patch_width,
+                hidden_states.device,
+            )
+            freqs_cis = (freqs_cos.float(), freqs_sin.float())
+
         # timestep shape: batch_size, or batch_size, seq_len (wan 2.2 ti2v)
         if timestep.dim() == 2:
             # ti2v
@@ -885,6 +1008,14 @@ class WanTransformer3DModel(CachableDiT, OffloadableDiTMixin):
             if self.enable_teacache:
                 self.maybe_cache_states(hidden_states, original_hidden_states)
         self.cnt += 1
+
+        # NOTE: used for sequence shard
+        if sequence_shard_enabled:
+            hidden_states = hidden_states.contiguous()
+            hidden_states = sequence_model_parallel_all_gather(hidden_states, dim=1)
+            if seq_shard_pad > 0:
+                hidden_states = hidden_states[:, :seq_len_orig, :]
+
         # 5. Output norm, projection & unpatchify
         if temb.dim() == 3:
             # batch_size, seq_len, inner_dim (wan 2.2 ti2v)
@@ -898,7 +1029,7 @@ class WanTransformer3DModel(CachableDiT, OffloadableDiTMixin):
             shift, scale = (self.scale_shift_table + temb.unsqueeze(1)).chunk(2, dim=1)
 
         hidden_states = self.norm_out(hidden_states, shift, scale)
-        hidden_states = self.proj_out(hidden_states)
+        hidden_states, _ = self.proj_out(hidden_states)
 
         hidden_states = hidden_states.reshape(
             batch_size,

@@ -3,7 +3,7 @@
 import asyncio
 import json
 import os
-import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import (
@@ -88,6 +88,10 @@ def _build_sampling_params_from_request(
         sampling_kwargs["enable_teacache"] = request.enable_teacache
     if request.output_path is not None:
         sampling_kwargs["output_path"] = request.output_path
+    if request.resolution is not None:
+        sampling_kwargs["resolution"] = request.resolution
+    if request.aspect_ratio is not None:
+        sampling_kwargs["aspect_ratio"] = request.aspect_ratio
     sampling_params = SamplingParams.from_user_sampling_params_args(
         model_path=server_args.model_path,
         server_args=server_args,
@@ -116,7 +120,7 @@ def _video_job_from_sampling(
         "model": req.model or "sora-2",
         "status": "queued",
         "progress": 0,
-        "created_at": int(time.time()),
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "size": size_str,
         "seconds": str(seconds),
         "quality": "standard",
@@ -138,7 +142,7 @@ async def _dispatch_job_async(job_id: str, batch: Req) -> None:
         update_fields = {
             "status": "completed",
             "progress": 100,
-            "completed_at": int(time.time()),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
             "url": cloud_url,
             "file_path": save_file_path if not cloud_url else None,
         }
@@ -165,6 +169,8 @@ async def create_video(
     model: Optional[str] = Form(None),
     seconds: Optional[int] = Form(None),
     size: Optional[str] = Form(None),
+    resolution: Optional[str] = Form(None),
+    aspect_ratio: Optional[str] = Form(None),
     fps: Optional[int] = Form(None),
     num_frames: Optional[int] = Form(None),
     seed: Optional[int] = Form(1024),
@@ -219,6 +225,8 @@ async def create_video(
             model=model,
             seconds=seconds if seconds is not None else 4,
             size=size,
+            resolution=resolution,
+            aspect_ratio=aspect_ratio,
             fps=fps_val,
             num_frames=num_frames_val,
             seed=seed,

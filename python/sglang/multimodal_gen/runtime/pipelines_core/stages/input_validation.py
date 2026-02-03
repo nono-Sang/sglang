@@ -32,6 +32,107 @@ V = StageValidators
 # TODO: since this might change sampling params after logging, should be do this beforehand?
 
 
+def isotropic_crop_resize_pil(
+    image: Image.Image, target_size: tuple[int, int]
+) -> Image.Image:
+    target_width, target_height = target_size
+    orig_width, orig_height = image.size
+    target_ratio = target_height / target_width
+    orig_ratio = orig_height / orig_width
+
+    if abs(orig_ratio - target_ratio) < 0.01:
+        return image.resize((target_width, target_height), Image.LANCZOS)
+
+    if orig_ratio > target_ratio:
+        # Image is taller, crop height
+        crop_height = int(target_ratio * orig_width)
+        crop_width = orig_width
+        y0 = (orig_height - crop_height) // 2
+        y1 = y0 + crop_height
+        x0, x1 = 0, orig_width
+    else:
+        # Image is wider, crop width
+        crop_width = int(orig_height / target_ratio)
+        crop_height = orig_height
+        x0 = (orig_width - crop_width) // 2
+        x1 = x0 + crop_width
+        y0, y1 = 0, orig_height
+
+    cropped_image = image.crop((x0, y0, x1, y1))
+    resized_image = cropped_image.resize((target_width, target_height), Image.LANCZOS)
+
+    return resized_image
+
+
+RESOLUTION_PRESETS = {
+    "16:9": {
+        "480p": (832, 480),
+        "580p": (960, 512),
+        "720p": (1280, 720),
+    },
+    "9:16": {
+        "480p": (480, 832),
+        "580p": (512, 960),
+        "720p": (720, 1280),
+    },
+    "1:1": {
+        "480p": (480, 480),
+        "580p": (512, 512),
+        "720p": (720, 720),
+    },
+}
+
+
+def parse_resolution_and_aspect_ratio(
+    original_aspect_ratio: float, resolution: str | None, aspect_ratio: str | None
+) -> tuple[int, int] | None:
+    if resolution is None or aspect_ratio is None:
+        return None
+
+    if aspect_ratio == "auto":
+        available_resolutions = set()
+        for ar in RESOLUTION_PRESETS.values():
+            available_resolutions.update(ar.keys())
+
+        if resolution not in available_resolutions:
+            logger.warning(
+                f"Resolution {resolution} not found in any preset, using default logic"
+            )
+            return None
+
+        # Compare original aspect ratio with actual aspect ratios at the given resolution
+        # Calculate the actual aspect ratio (height/width) for each preset at this resolution
+        aspect_ratio_candidates = {}
+        for ar_key, ar_presets in RESOLUTION_PRESETS.items():
+            if resolution in ar_presets:
+                width, height = ar_presets[resolution]
+                actual_aspect_ratio = height / width
+                aspect_ratio_candidates[ar_key] = actual_aspect_ratio
+
+        # Find the closest aspect ratio based on the actual values at this resolution
+        closest_aspect_ratio = min(
+            aspect_ratio_candidates.items(),
+            key=lambda x: abs(x[1] - original_aspect_ratio),
+        )
+        aspect_ratio = closest_aspect_ratio[0]
+        logger.info(
+            f"Based on the original aspect ratio {original_aspect_ratio} and resolution {resolution}, "
+            f"the closest aspect ratio is {aspect_ratio} (actual ratio: {closest_aspect_ratio[1]:.4f})"
+        )
+
+    if aspect_ratio not in RESOLUTION_PRESETS:
+        logger.warning(f"Invalid aspect_ratio: {aspect_ratio}, using default logic")
+        return None
+
+    if resolution not in RESOLUTION_PRESETS[aspect_ratio]:
+        logger.warning(
+            f"Resolution {resolution} not found for aspect_ratio {aspect_ratio}, using default logic"
+        )
+        return None
+
+    return RESOLUTION_PRESETS[aspect_ratio][resolution]  # (width, height)
+
+
 class InputValidationStage(PipelineStage):
     """
     Stage for validating and preparing inputs for diffusion pipelines.
@@ -162,18 +263,44 @@ class InputValidationStage(PipelineStage):
                     0
                 ]  # not support multi image input yet.
 
-            max_area = server_args.pipeline_config.max_area
-            aspect_ratio = condition_image_height / condition_image_width
+            logger.info(
+                f"original image shape: {condition_image_width}x{condition_image_height}"
+            )
+
             mod_value = (
                 server_args.pipeline_config.vae_config.arch_config.scale_factor_spatial
                 * server_args.pipeline_config.dit_config.arch_config.patch_size[1]
             )
-            height = round(np.sqrt(max_area * aspect_ratio)) // mod_value * mod_value
-            width = round(np.sqrt(max_area / aspect_ratio)) // mod_value * mod_value
 
-            batch.condition_image = batch.condition_image.resize((width, height))
-            batch.height = height
-            batch.width = width
+            logger.info(
+                f"resolution: {batch.resolution}, aspect_ratio: {batch.aspect_ratio}"
+            )
+
+            target_size = parse_resolution_and_aspect_ratio(
+                condition_image_width / condition_image_height,
+                batch.resolution,
+                batch.aspect_ratio,
+            )
+
+            if target_size is not None:
+                target_width, target_height = target_size
+                height = target_height // mod_value * mod_value
+                width = target_width // mod_value * mod_value
+                batch.condition_image = isotropic_crop_resize_pil(
+                    batch.condition_image, (width, height)
+                )
+            else:
+                max_area = server_args.pipeline_config.max_area
+                aspect_ratio = condition_image_height / condition_image_width
+                height = (
+                    round(np.sqrt(max_area * aspect_ratio)) // mod_value * mod_value
+                )
+                width = round(np.sqrt(max_area / aspect_ratio)) // mod_value * mod_value
+                batch.condition_image = batch.condition_image.resize((width, height))
+
+            logger.info(f"resized image shape: {width}x{height}")
+
+            batch.height, batch.width = height, width
 
     def forward(
         self,

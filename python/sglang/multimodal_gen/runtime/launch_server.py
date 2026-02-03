@@ -70,6 +70,13 @@ def launch_server(server_args: ServerArgs, launch_http_server: bool = True):
 
     num_gpus = server_args.num_gpus
     processes = []
+    per_process_visible = os.getenv("ENABLE_ISOLATED_CUDA_CONTEXT", "0").lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
 
     # Pipes for master to talk to slaves
     task_pipes_to_slaves_w = []
@@ -95,43 +102,54 @@ def launch_server(server_args: ServerArgs, launch_http_server: bool = True):
     for i in range(num_gpus):
         reader, writer = mp.Pipe(duplex=False)
         scheduler_pipe_writers.append(writer)
-        if i == 0:  # Master worker
-            process = mp.Process(
-                target=run_scheduler_process,
-                args=(
-                    i,  # local_rank
-                    i,  # rank
-                    master_port,
-                    server_args,
-                    writer,
-                    None,  # No task pipe to read from master
-                    None,  # No result pipe to write to master
-                    task_pipes_to_slaves_w,
-                    result_pipes_from_slaves_r,
-                ),
-                name=f"sglang-diffusionWorker-{i}",
-                daemon=True,
-            )
-        else:  # Slave workers
-            process = mp.Process(
-                target=run_scheduler_process,
-                args=(
-                    i,  # local_rank
-                    i,  # rank
-                    master_port,
-                    server_args,
-                    writer,
-                    None,  # No task pipe to read from master
-                    None,  # No result pipe to write to master
-                    task_pipes_to_slaves_r[i - 1],
-                    result_pipes_from_slaves_w[i - 1],
-                ),
-                name=f"sglang-diffusionWorker-{i}",
-                daemon=True,
-            )
-        scheduler_pipe_readers.append(reader)
-        process.start()
-        processes.append(process)
+        local_rank = 0 if per_process_visible else i
+        if per_process_visible:
+            original_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(i)
+        try:
+            if i == 0:  # Master worker
+                process = mp.Process(
+                    target=run_scheduler_process,
+                    args=(
+                        local_rank,  # local_rank
+                        i,  # rank
+                        master_port,
+                        server_args,
+                        writer,
+                        None,  # No task pipe to read from master
+                        None,  # No result pipe to write to master
+                        task_pipes_to_slaves_w,
+                        result_pipes_from_slaves_r,
+                    ),
+                    name=f"sglang-diffusionWorker-{i}",
+                    daemon=True,
+                )
+            else:  # Slave workers
+                process = mp.Process(
+                    target=run_scheduler_process,
+                    args=(
+                        local_rank,  # local_rank
+                        i,  # rank
+                        master_port,
+                        server_args,
+                        writer,
+                        None,  # No task pipe to read from master
+                        None,  # No result pipe to write to master
+                        task_pipes_to_slaves_r[i - 1],
+                        result_pipes_from_slaves_w[i - 1],
+                    ),
+                    name=f"sglang-diffusionWorker-{i}",
+                    daemon=True,
+                )
+            scheduler_pipe_readers.append(reader)
+            process.start()
+            processes.append(process)
+        finally:
+            if per_process_visible:
+                if original_visible is None:
+                    os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+                else:
+                    os.environ["CUDA_VISIBLE_DEVICES"] = original_visible
 
     # Wait for all workers to be ready
     scheduler_infos = []

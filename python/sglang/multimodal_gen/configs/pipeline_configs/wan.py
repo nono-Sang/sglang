@@ -42,6 +42,9 @@ def t5_postprocess_text(outputs: BaseEncoderOutput, _text_inputs) -> torch.Tenso
 @dataclass
 class WanI2VCommonConfig(PipelineConfig):
     # for all wan i2v pipelines
+    # NOTE: used for sequence shard
+    sp_shard_mode: str = "sequence"  # "sequence" or "time"
+
     def adjust_num_frames(self, num_frames):
         vae_scale_factor_temporal = self.vae_config.arch_config.scale_factor_temporal
         if num_frames % vae_scale_factor_temporal != 1:
@@ -205,7 +208,7 @@ class FastWan2_2_TI2V_5B_Config(Wan2_2_TI2V_5B_Config):
 
 
 @dataclass
-class Wan2_2_T2V_A14B_Config(WanT2V480PConfig):
+class Wan2_2_T2V_A14B_Config(WanT2V720PConfig):
     flow_shift: float | None = 12.0
     boundary_ratio: float | None = 0.875
 
@@ -214,7 +217,7 @@ class Wan2_2_T2V_A14B_Config(WanT2V480PConfig):
 
 
 @dataclass
-class Wan2_2_I2V_A14B_Config(WanI2V480PConfig):
+class Wan2_2_I2V_A14B_Config(WanI2V720PConfig):
     flow_shift: float | None = 5.0
     boundary_ratio: float | None = 0.900
 

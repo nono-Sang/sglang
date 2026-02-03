@@ -22,6 +22,7 @@
 """PyTorch T5 & UMT5 model."""
 
 import math
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -30,7 +31,12 @@ import torch.nn.functional as F
 from torch import nn
 
 from sglang.multimodal_gen.configs.models.encoders import BaseEncoderOutput, T5Config
-from sglang.multimodal_gen.runtime.distributed import get_tp_rank, get_tp_world_size
+from sglang.multimodal_gen.runtime.distributed import (
+    get_sp_group,
+    get_sp_world_size,
+    get_tp_rank,
+    get_tp_world_size,
+)
 from sglang.multimodal_gen.runtime.layers.activation import get_act_fn
 from sglang.multimodal_gen.runtime.layers.layernorm import RMSNorm
 from sglang.multimodal_gen.runtime.layers.linear import (
@@ -39,12 +45,19 @@ from sglang.multimodal_gen.runtime.layers.linear import (
     RowParallelLinear,
 )
 from sglang.multimodal_gen.runtime.layers.quantization import QuantizationConfig
+from sglang.multimodal_gen.runtime.layers.utils import get_group_rank, get_group_size
 from sglang.multimodal_gen.runtime.layers.vocab_parallel_embedding import (
     VocabParallelEmbedding,
 )
 from sglang.multimodal_gen.runtime.loader.weight_utils import default_weight_loader
 from sglang.multimodal_gen.runtime.models.encoders.base import TextEncoder
 from sglang.multimodal_gen.runtime.platforms import current_platform
+from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
+
+logger = init_logger(__name__)
+
+USE_PARALLEL_FOLDING = os.getenv("USE_PARALLEL_FOLDING", "0") == "1"
+logger.info(f"USE_PARALLEL_FOLDING: {USE_PARALLEL_FOLDING}")
 
 
 class AttentionType:
@@ -77,9 +90,20 @@ class T5DenseActDense(nn.Module):
         self, config: T5Config, quant_config: QuantizationConfig | None = None
     ):
         super().__init__()
-        self.wi = MergedColumnParallelLinear(config.d_model, [config.d_ff], bias=False)
+        if USE_PARALLEL_FOLDING and get_sp_world_size() > 1:
+            tp_group = get_sp_group()
+        else:
+            tp_group = None
+        self.wi = MergedColumnParallelLinear(
+            config.d_model, [config.d_ff], bias=False, tp_group=tp_group
+        )
+
         self.wo = RowParallelLinear(
-            config.d_ff, config.d_model, bias=False, quant_config=quant_config
+            config.d_ff,
+            config.d_model,
+            bias=False,
+            quant_config=quant_config,
+            tp_group=tp_group,
         )
         self.act = get_act_fn(config.dense_act_fn)
 
@@ -96,16 +120,24 @@ class T5DenseGatedActDense(nn.Module):
         self, config: T5Config, quant_config: QuantizationConfig | None = None
     ):
         super().__init__()
+        if USE_PARALLEL_FOLDING and get_sp_world_size() > 1:
+            tp_group = get_sp_group()
+        else:
+            tp_group = None
         self.wi_0 = MergedColumnParallelLinear(
-            config.d_model, [config.d_ff], bias=False, quant_config=quant_config
+            config.d_model, [config.d_ff], bias=False, tp_group=tp_group
         )
         self.wi_1 = MergedColumnParallelLinear(
-            config.d_model, [config.d_ff], bias=False, quant_config=quant_config
+            config.d_model, [config.d_ff], bias=False, tp_group=tp_group
         )
         # Should not run in fp16 unless mixed-precision is used,
         # see https://github.com/huggingface/transformers/issues/20287.
         self.wo = RowParallelLinear(
-            config.d_ff, config.d_model, bias=False, quant_config=quant_config
+            config.d_ff,
+            config.d_model,
+            bias=False,
+            quant_config=quant_config,
+            tp_group=tp_group,
         )
         self.act = get_act_fn(config.dense_act_fn)
 
@@ -178,8 +210,20 @@ class T5Attention(nn.Module):
         self.key_value_proj_dim = config.d_kv
         self.total_num_heads = self.total_num_kv_heads = config.num_heads
 
+        if USE_PARALLEL_FOLDING and get_sp_world_size() > 1:
+            tp_group = get_sp_group()
+            tp_world_size = get_group_size(tp_group)
+            tp_rank = get_group_rank(tp_group)
+        else:
+            tp_group = None
+            tp_world_size = get_tp_world_size()
+            tp_rank = get_tp_rank()
+
+        self.tp_group = tp_group
+        self.tp_world_size = tp_world_size
+        self.tp_rank = tp_rank
+
         # Partition heads across multiple tensor parallel GPUs.
-        tp_world_size = get_tp_world_size()
         assert config.num_heads % tp_world_size == 0
         self.n_heads = config.num_heads // tp_world_size
 
@@ -195,6 +239,7 @@ class T5Attention(nn.Module):
             bias=False,
             quant_config=quant_config,
             prefix=f"{prefix}.qkv_proj",
+            tp_group=tp_group,
         )
 
         self.attn = T5MultiHeadAttention()
@@ -206,6 +251,7 @@ class T5Attention(nn.Module):
                 org_num_embeddings=self.relative_attention_num_buckets,
                 padding_size=self.relative_attention_num_buckets,
                 quant_config=quant_config,
+                tp_group=tp_group,
             )
         self.o = RowParallelLinear(
             self.total_num_heads * self.key_value_proj_dim,
@@ -213,6 +259,7 @@ class T5Attention(nn.Module):
             bias=False,
             quant_config=quant_config,
             prefix=f"{prefix}.o_proj",
+            tp_group=tp_group,
         )
 
     @staticmethod
@@ -342,10 +389,9 @@ class T5Attention(nn.Module):
             mask_val = -1e4 if current_platform.is_mps() else torch.finfo(q.dtype).min
             attn_bias.masked_fill_(attention_mask == 0, mask_val)
 
-        if get_tp_world_size() > 1:
-            rank = get_tp_rank()
+        if self.tp_world_size > 1:
             attn_bias = attn_bias[
-                :, rank * self.n_heads : (rank + 1) * self.n_heads, :, :
+                :, self.tp_rank * self.n_heads : (self.tp_rank + 1) * self.n_heads, :, :
             ]
 
         attn_output = self.attn(q, k, v, attn_bias)
@@ -549,9 +595,16 @@ class T5EncoderModel(TextEncoder):
         super().__init__(config)
 
         quant_config = None
+        if USE_PARALLEL_FOLDING and get_sp_world_size() > 1:
+            tp_group = get_sp_group()
+        else:
+            tp_group = None
 
         self.shared = VocabParallelEmbedding(
-            config.vocab_size, config.d_model, org_num_embeddings=config.vocab_size
+            config.vocab_size,
+            config.d_model,
+            org_num_embeddings=config.vocab_size,
+            tp_group=tp_group,
         )
 
         self.encoder = T5Stack(
@@ -635,9 +688,16 @@ class UMT5EncoderModel(TextEncoder):
         super().__init__(config)
 
         quant_config = None
+        if USE_PARALLEL_FOLDING and get_sp_world_size() > 1:
+            tp_group = get_sp_group()
+        else:
+            tp_group = None
 
         self.shared = VocabParallelEmbedding(
-            config.vocab_size, config.d_model, org_num_embeddings=config.vocab_size
+            config.vocab_size,
+            config.d_model,
+            org_num_embeddings=config.vocab_size,
+            tp_group=tp_group,
         )
 
         self.encoder = T5Stack(

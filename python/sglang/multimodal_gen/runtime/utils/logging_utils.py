@@ -238,6 +238,10 @@ def init_logger(name: str) -> _SGLDiffusionLogger:
     setattr(logger, "info_once", MethodType(_print_info_once, logger))
     setattr(logger, "warning_once", MethodType(_print_warning_once, logger))
 
+    force_main_process_only = os.getenv(
+        "ENABLE_ISOLATED_CUDA_CONTEXT", "0"
+    ).lower() in {"1", "true", "yes", "y", "on"}
+
     def _create_patched_method(
         level: int,
         main_process_only_default: bool,
@@ -247,8 +251,12 @@ def init_logger(name: str) -> _SGLDiffusionLogger:
             self: Logger,
             msg: object,
             *args: Any,
-            main_process_only: bool = main_process_only_default,
-            local_main_process_only: bool = local_main_process_only_default,
+            main_process_only: bool = (
+                True if force_main_process_only else main_process_only_default
+            ),
+            local_main_process_only: bool = (
+                False if force_main_process_only else local_main_process_only_default
+            ),
             **kwargs: Any,
         ) -> None:
             _log_process_aware(

@@ -210,13 +210,16 @@ async def process_generation_batch(
     with log_generation_timer(logger, batch.prompt):
         result = await scheduler_client.forward([batch])
 
-        if result.output is None:
+        if result.output is None and not getattr(result, "output_file_paths", None):
             error_msg = getattr(result, "error", "Unknown error")
             raise RuntimeError(
                 f"Model generation returned no output. Error from scheduler: {error_msg}"
             )
         save_file_path_list = []
-        if batch.data_type == DataType.VIDEO:
+        output_file_paths = getattr(result, "output_file_paths", None)
+        if output_file_paths:
+            save_file_path_list = output_file_paths
+        elif batch.data_type == DataType.VIDEO:
             for idx, output in enumerate(result.output):
                 save_file_path = str(
                     os.path.join(batch.output_path, batch.output_file_name)

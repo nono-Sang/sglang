@@ -24,12 +24,23 @@ from sglang.multimodal_gen.configs.pipeline_configs.wan import (
     Wan2_2_TI2V_5B_Config,
     WanI2V480PConfig,
 )
+from sglang.multimodal_gen.runtime.cache.cache_dit_integration import (
+    CacheDitConfig,
+    enable_cache_on_dual_transformer,
+    enable_cache_on_transformer,
+    get_scm_mask,
+    refresh_context_on_dual_transformer,
+    refresh_context_on_transformer,
+)
 from sglang.multimodal_gen.runtime.distributed import (
     cfg_model_parallel_all_reduce,
     get_local_torch_device,
+    get_sp_group,
     get_sp_parallel_rank,
     get_sp_world_size,
+    get_tp_group,
     get_world_group,
+    get_world_size,
 )
 from sglang.multimodal_gen.runtime.distributed.communication_op import (
     sequence_model_parallel_all_gather,
@@ -128,7 +139,7 @@ class DenoisingStage(PipelineStage):
         try:
             import torch._inductor.config as _inductor_cfg
 
-            _inductor_cfg.reorder_for_compute_comm_overlap = True
+            _inductor_cfg.reorder_for_compute_comm_overlap = False
         except ImportError:
             pass
         mode = os.environ.get("SGLANG_TORCH_COMPILE_MODE", "max-autotune-no-cudagraphs")
@@ -137,7 +148,9 @@ class DenoisingStage(PipelineStage):
         setattr(module, "forward", compiled_forward)
         return module
 
-    def _maybe_enable_cache_dit(self, num_inference_steps: int, batch: Req) -> None:
+    def _maybe_enable_cache_dit(
+        self, num_inference_steps: int | tuple[int, int], batch: Req
+    ) -> None:
         """Enable cache-dit on the transformers if configured (idempotent).
 
         This method should be called after the transformer is fully loaded
@@ -147,31 +160,30 @@ class DenoisingStage(PipelineStage):
         transformers with (potentially) different configurations.
 
         """
+        if isinstance(num_inference_steps, tuple):
+            num_high_noise_steps, num_low_noise_steps = num_inference_steps
+
+        # NOTE: When a new request arrives, we need to refresh the cache-dit context.
         if self._cache_dit_enabled:
-            if self._cached_num_steps != num_inference_steps:
-                logger.warning(
-                    "num_inference_steps changed from %d to %d after cache-dit was enabled. "
-                    "Continuing with initial configuration (steps=%d).",
-                    self._cached_num_steps,
+            if isinstance(num_inference_steps, tuple):
+                refresh_context_on_dual_transformer(
+                    self.transformer,
+                    self.transformer_2,
+                    num_high_noise_steps,
+                    num_low_noise_steps,
+                    envs.SGLANG_CACHE_DIT_SCM_PRESET,
+                )
+            else:
+                refresh_context_on_transformer(
+                    self.transformer,
                     num_inference_steps,
-                    self._cached_num_steps,
+                    envs.SGLANG_CACHE_DIT_SCM_PRESET,
                 )
             return
+
         # check if cache-dit is enabled in config
         if not envs.SGLANG_CACHE_DIT_ENABLED or batch.is_warmup:
             return
-
-        from sglang.multimodal_gen.runtime.cache.cache_dit_integration import (
-            CacheDitConfig,
-            enable_cache_on_dual_transformer,
-            enable_cache_on_transformer,
-            get_scm_mask,
-        )
-        from sglang.multimodal_gen.runtime.distributed import (
-            get_sp_group,
-            get_tp_group,
-            get_world_size,
-        )
 
         world_size = get_world_size()
         parallelized = world_size > 1
@@ -230,13 +242,25 @@ class DenoisingStage(PipelineStage):
         # cache-dit handles step count validation and scaling internally
         steps_computation_mask = get_scm_mask(
             preset=scm_preset,
-            num_inference_steps=num_inference_steps,
+            num_inference_steps=(
+                num_inference_steps
+                if isinstance(num_inference_steps, int)
+                else num_high_noise_steps
+            ),
             compute_bins=scm_compute_bins,
             cache_bins=scm_cache_bins,
         )
 
+        if isinstance(num_inference_steps, tuple):
+            steps_computation_mask_2 = get_scm_mask(
+                preset=scm_preset,
+                num_inference_steps=num_low_noise_steps,
+                compute_bins=scm_compute_bins,
+                cache_bins=scm_cache_bins,
+            )
+
         # build config for primary transformer (high-noise expert)
-        primary_config = CacheDitConfig(
+        self.primary_config = CacheDitConfig(
             enabled=True,
             Fn_compute_blocks=envs.SGLANG_CACHE_DIT_FN,
             Bn_compute_blocks=envs.SGLANG_CACHE_DIT_BN,
@@ -245,7 +269,11 @@ class DenoisingStage(PipelineStage):
             max_continuous_cached_steps=envs.SGLANG_CACHE_DIT_MC,
             enable_taylorseer=envs.SGLANG_CACHE_DIT_TAYLORSEER,
             taylorseer_order=envs.SGLANG_CACHE_DIT_TS_ORDER,
-            num_inference_steps=num_inference_steps,
+            num_inference_steps=(
+                num_inference_steps
+                if isinstance(num_inference_steps, int)
+                else num_high_noise_steps
+            ),
             # SCM fields
             steps_computation_mask=steps_computation_mask,
             steps_computation_policy=scm_policy,
@@ -255,7 +283,7 @@ class DenoisingStage(PipelineStage):
             # dual transformer
             # build config for secondary transformer (low-noise expert)
             # uses secondary parameters which inherit from primary if not explicitly set
-            secondary_config = CacheDitConfig(
+            self.secondary_config = CacheDitConfig(
                 enabled=True,
                 Fn_compute_blocks=envs.SGLANG_CACHE_DIT_SECONDARY_FN,
                 Bn_compute_blocks=envs.SGLANG_CACHE_DIT_SECONDARY_BN,
@@ -264,9 +292,9 @@ class DenoisingStage(PipelineStage):
                 max_continuous_cached_steps=envs.SGLANG_CACHE_DIT_SECONDARY_MC,
                 enable_taylorseer=envs.SGLANG_CACHE_DIT_SECONDARY_TAYLORSEER,
                 taylorseer_order=envs.SGLANG_CACHE_DIT_SECONDARY_TS_ORDER,
-                num_inference_steps=num_inference_steps,
+                num_inference_steps=num_low_noise_steps,
                 # SCM fields - shared with primary
-                steps_computation_mask=steps_computation_mask,
+                steps_computation_mask=steps_computation_mask_2,
                 steps_computation_policy=scm_policy,
             )
 
@@ -275,21 +303,22 @@ class DenoisingStage(PipelineStage):
             self.transformer, self.transformer_2 = enable_cache_on_dual_transformer(
                 self.transformer,
                 self.transformer_2,
-                primary_config,
-                secondary_config,
+                self.primary_config,
+                self.secondary_config,
                 model_name="wan2.2",
                 sp_group=sp_group,
                 tp_group=tp_group,
             )
             logger.info(
-                "cache-dit enabled on dual transformers (steps=%d)",
-                num_inference_steps,
+                "cache-dit enabled on dual transformers (steps=%d, %d)",
+                num_high_noise_steps,
+                num_low_noise_steps,
             )
         else:
             # single transformer
             self.transformer = enable_cache_on_transformer(
                 self.transformer,
-                primary_config,
+                self.primary_config,
                 model_name="transformer",
                 sp_group=sp_group,
                 tp_group=tp_group,
@@ -483,12 +512,25 @@ class DenoisingStage(PipelineStage):
         """
         assert self.transformer is not None
         pipeline = self.pipeline() if self.pipeline else None
-        # NOTE: In warmup requests we may override req.num_inference_steps (e.g. set to 1)
-        # for latency amortization, but cache-dit needs the *original* total steps to
-        # initialize/refresh its context correctly.
-        cache_dit_num_inference_steps = batch.extra.get(
-            "cache_dit_num_inference_steps", batch.num_inference_steps
-        )
+
+        boundary_timestep = self._handle_boundary_ratio(server_args, batch)
+        # Get timesteps and calculate warmup steps
+        timesteps = batch.timesteps
+        if timesteps is None:
+            raise ValueError("Timesteps must be provided")
+        num_inference_steps = batch.num_inference_steps
+        num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
+
+        if self.transformer_2 is not None:
+            assert boundary_timestep is not None, "boundary_timestep must be provided"
+            num_high_noise_steps = (timesteps >= boundary_timestep).sum().item()
+            num_low_noise_steps = num_inference_steps - num_high_noise_steps
+            cache_dit_num_inference_steps = (num_high_noise_steps, num_low_noise_steps)
+        else:
+            cache_dit_num_inference_steps = num_inference_steps
+
+        logger.info(f"cache_dit_num_inference_steps: {cache_dit_num_inference_steps}")
+
         if not server_args.model_loaded["transformer"]:
             # FIXME: reuse more code
             loader = TransformerLoader()
@@ -516,13 +558,6 @@ class DenoisingStage(PipelineStage):
             target_dtype != torch.float32
         ) and not server_args.disable_autocast
 
-        # Get timesteps and calculate warmup steps
-        timesteps = batch.timesteps
-        if timesteps is None:
-            raise ValueError("Timesteps must be provided")
-        num_inference_steps = batch.num_inference_steps
-        num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
-
         # Prepare image latents and embeddings for I2V generation
         image_embeds = batch.image_embeds
         if len(image_embeds) > 0:
@@ -544,8 +579,6 @@ class DenoisingStage(PipelineStage):
             assert neg_prompt_embeds is not None
             # Removed Tensor truthiness assert to avoid GPU sync
 
-        boundary_timestep = self._handle_boundary_ratio(server_args, batch)
-
         # specifically for Wan2_2_TI2V_5B_Config, not applicable for FastWan2_2_TI2V_5B_Config
         should_preprocess_for_wan_ti2v = (
             server_args.pipeline_config.task_type == ModelTaskType.TI2V
@@ -563,6 +596,12 @@ class DenoisingStage(PipelineStage):
                 None,
                 None,
                 None,
+            )
+
+        # NOTE: used for sequence shard
+        if server_args.pipeline_config.task_type == ModelTaskType.I2V:
+            batch.sp_shard_mode = getattr(
+                server_args.pipeline_config, "sp_shard_mode", "time"
             )
 
         # Handle sequence parallelism after TI2V processing
@@ -1117,8 +1156,8 @@ class DenoisingStage(PipelineStage):
         """
         Create a progress bar for the denoising process.
         """
-        local_rank = get_world_group().local_rank
-        disable = local_rank != 0
+        rank = get_world_group().rank
+        disable = rank != 0
         return tqdm(iterable=iterable, total=total, disable=disable)
 
     def rescale_noise_cfg(

@@ -226,6 +226,25 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "SGLANG_DIFFUSION_ATTENTION_BACKEND": _lazy_str(
         "SGLANG_DIFFUSION_ATTENTION_BACKEND"
     ),
+    # LiteAttention configuration (FA3 wrapper with skip optimization)
+    "SGLANG_DIFFUSION_LITE_ATTENTION_ENABLE_SKIPPING": _lazy_bool(
+        "SGLANG_DIFFUSION_LITE_ATTENTION_ENABLE_SKIPPING", "true"
+    ),
+    "SGLANG_DIFFUSION_LITE_ATTENTION_SKIP_ONLY_SELF_ATTN": _lazy_bool(
+        "SGLANG_DIFFUSION_LITE_ATTENTION_SKIP_ONLY_SELF_ATTN", "true"
+    ),
+    "SGLANG_DIFFUSION_LITE_ATTENTION_THRESHOLD": _lazy_float(
+        "SGLANG_DIFFUSION_LITE_ATTENTION_THRESHOLD", -6.0
+    ),
+    "SGLANG_DIFFUSION_LITE_ATTENTION_MAX_BATCH_SIZE": _lazy_int(
+        "SGLANG_DIFFUSION_LITE_ATTENTION_MAX_BATCH_SIZE", 1
+    ),
+    "SGLANG_DIFFUSION_LITE_ATTENTION_REVERSE_SKIP_LIST": _lazy_bool(
+        "SGLANG_DIFFUSION_LITE_ATTENTION_REVERSE_SKIP_LIST", "true"
+    ),
+    "SGLANG_DIFFUSION_LITE_ATTENTION_USE_INT8": _lazy_bool(
+        "SGLANG_DIFFUSION_LITE_ATTENTION_USE_INT8", "false"
+    ),
     # Use dedicated multiprocess context for workers.
     # Both spawn and fork work
     "SGLANG_DIFFUSION_WORKER_MULTIPROC_METHOD": _lazy_str(

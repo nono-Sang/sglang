@@ -938,16 +938,16 @@ class ServerArgs:
             self.use_fsdp_inference = False
             self.dit_layerwise_offload = False
 
-        if not envs.SGLANG_CACHE_DIT_ENABLED:
-            # TODO: need a better way to tell this
-            if (
-                "wan" in self.pipeline_config.__class__.__name__.lower()
-                and self.dit_layerwise_offload is None
-            ):
-                logger.info(
-                    "Automatically enable dit_layerwise_offload for Wan for best performance"
-                )
-                self.dit_layerwise_offload = True
+        # if not envs.SGLANG_CACHE_DIT_ENABLED:
+        #     # TODO: need a better way to tell this
+        #     if (
+        #         "wan" in self.pipeline_config.__class__.__name__.lower()
+        #         and self.dit_layerwise_offload is None
+        #     ):
+        #         logger.info(
+        #             "Automatically enable dit_layerwise_offload for Wan for best performance"
+        #         )
+        #         self.dit_layerwise_offload = True
 
         if self.dit_layerwise_offload:
             if self.use_fsdp_inference:

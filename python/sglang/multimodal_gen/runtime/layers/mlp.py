@@ -10,6 +10,7 @@ from sglang.multimodal_gen.runtime.layers.linear import (
     ColumnParallelLinear,
     RowParallelLinear,
 )
+from sglang.multimodal_gen.runtime.layers.quantization import QuantizationConfig
 
 
 class MLP(nn.Module):
@@ -26,6 +27,7 @@ class MLP(nn.Module):
         act_type: str = "gelu_pytorch_tanh",
         dtype: torch.dtype | None = None,
         prefix: str = "",
+        quant_config: QuantizationConfig | None = None,
     ):
         super().__init__()
         self.fc_in = ColumnParallelLinear(
@@ -33,6 +35,7 @@ class MLP(nn.Module):
             mlp_hidden_dim,
             bias=True,
             gather_output=False,
+            quant_config=quant_config,
         )
 
         self.act = get_act_fn(act_type)
@@ -43,6 +46,7 @@ class MLP(nn.Module):
             output_dim,
             bias=True,
             input_is_parallel=True,
+            quant_config=quant_config,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

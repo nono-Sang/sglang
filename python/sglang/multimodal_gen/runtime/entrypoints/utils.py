@@ -65,8 +65,12 @@ def post_process_sample(
 
     # Convert to uint8 and move to CPU in bulk
     # Shape: [C, T, H, W] -> [T, H, W, C]
-    sample = (sample * 255).clamp(0, 255).to(torch.uint8)
-    videos = sample.permute(1, 2, 3, 0).cpu().numpy()
+    # sample = (sample * 255).clamp(0, 255).to(torch.uint8)
+    # videos = sample.permute(1, 2, 3, 0).cpu().numpy()
+
+    sample = sample.mul_(255).clamp_(0, 255).cpu()
+    sample = sample.to(torch.uint8)
+    videos = sample.permute(1, 2, 3, 0).numpy()
 
     # Convert to list of frames for imageio
     frames = list(videos)

@@ -92,11 +92,17 @@ class PipelineExecutor(ABC):
         request_id = batch.request_id
         rank = get_world_rank()
 
+        # 如果 batch 中没有设置 profiling 参数，使用默认值
+        profile_all_stages = getattr(batch, "profile_all_stages", False)
+        num_profiled_timesteps = getattr(batch, "num_profiled_timesteps", 2)
+        if num_profiled_timesteps is None:
+            num_profiled_timesteps = 2
+
         profiler = SGLDiffusionProfiler(
             request_id=request_id,
             rank=rank,
-            full_profile=batch.profile_all_stages,
-            num_steps=batch.num_profiled_timesteps,
+            full_profile=profile_all_stages,
+            num_steps=num_profiled_timesteps,
             num_inference_steps=batch.num_inference_steps,
         )
         try:

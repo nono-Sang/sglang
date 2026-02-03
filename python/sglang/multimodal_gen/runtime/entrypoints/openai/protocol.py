@@ -2,6 +2,7 @@ import time
 import uuid
 from abc import ABC
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
@@ -54,13 +55,15 @@ class VideoResponse(BaseModel):
     model: str = "sora-2"
     status: str = "queued"
     progress: int = 0
-    created_at: int = Field(default_factory=lambda: int(time.time()))
+    created_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
     size: str = ""
     seconds: str = "4"
     quality: str = "standard"
     url: Optional[str] = None
     remixed_from_video_id: Optional[str] = None
-    completed_at: Optional[int] = None
+    completed_at: Optional[str] = None
     expires_at: Optional[int] = None
     error: Optional[Dict[str, Any]] = None
     file_path: Optional[str] = None
@@ -74,6 +77,8 @@ class VideoGenerationsRequest(BaseModel):
     model: Optional[str] = None
     seconds: Optional[int] = 4
     size: Optional[str] = ""
+    resolution: Optional[str] = None
+    aspect_ratio: Optional[str] = None
     fps: Optional[int] = None
     num_frames: Optional[int] = None
     seed: Optional[int] = 1024

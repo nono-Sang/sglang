@@ -12,6 +12,50 @@ from torch.library import Library
 from sglang.multimodal_gen.runtime.platforms import current_platform
 
 
+def get_group_size(group) -> int:
+    """Get the size of a group, supporting both ProcessGroup and GroupCoordinator.
+
+    Args:
+        group: Either a torch.distributed.ProcessGroup or a GroupCoordinator instance.
+
+    Returns:
+        The size of the group.
+    """
+    if hasattr(group, "world_size"):
+        # GroupCoordinator has world_size attribute
+        return group.world_size
+    elif hasattr(group, "size") and callable(getattr(group, "size", None)):
+        # Some ProcessGroup implementations might have size() method
+        return group.size()
+    else:
+        # ProcessGroup: use torch.distributed.get_world_size()
+        import torch.distributed as dist
+
+        return dist.get_world_size(group=group)
+
+
+def get_group_rank(group) -> int:
+    """Get the rank of a group, supporting both ProcessGroup and GroupCoordinator.
+
+    Args:
+        group: Either a torch.distributed.ProcessGroup or a GroupCoordinator instance.
+
+    Returns:
+        The rank of the current process in the group.
+    """
+    if hasattr(group, "rank_in_group"):
+        # GroupCoordinator has rank_in_group attribute
+        return group.rank_in_group
+    elif hasattr(group, "rank") and callable(getattr(group, "rank", None)):
+        # Some ProcessGroup implementations might have rank() method
+        return group.rank()
+    else:
+        # ProcessGroup: use torch.distributed.get_rank()
+        import torch.distributed as dist
+
+        return dist.get_rank(group=group)
+
+
 def get_token_bin_counts_and_mask(
     tokens: torch.Tensor,
     vocab_size: int,

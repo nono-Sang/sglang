@@ -151,7 +151,8 @@ class DecodingStage(PipelineStage):
             image = _ensure_tensor_decode_output(decode_output)
 
         # De-normalize image to [0, 1] range
-        image = (image / 2 + 0.5).clamp(0, 1)
+        # image = (image / 2 + 0.5).clamp(0, 1)
+        image.div_(2).add_(0.5).clamp_(0, 1)
         return image
 
     def load_model(self):

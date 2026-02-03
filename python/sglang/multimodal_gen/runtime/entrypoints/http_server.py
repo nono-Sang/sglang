@@ -114,17 +114,21 @@ async def forward_to_scheduler(req_obj, sp):
     """Forwards request to scheduler and processes the result."""
     try:
         response = await async_scheduler_client.forward(req_obj)
-        if response.output is None:
+        if response.output is None and not getattr(response, "output_file_paths", None):
             raise RuntimeError("Model generation returned no output.")
 
         output_file_path = sp.output_file_path()
-        post_process_sample(
-            sample=response.output[0],
-            data_type=sp.data_type,
-            fps=sp.fps or 24,
-            save_output=True,
-            save_file_path=output_file_path,
-        )
+        output_file_paths = getattr(response, "output_file_paths", None)
+        if output_file_paths:
+            output_file_path = output_file_paths[0]
+        else:
+            post_process_sample(
+                sample=response.output[0],
+                data_type=sp.data_type,
+                fps=sp.fps or 24,
+                save_output=True,
+                save_file_path=output_file_path,
+            )
 
         if hasattr(response, "model_dump"):
             data = response.model_dump()
