@@ -154,6 +154,7 @@ class SamplingParams:
     suppress_logs: bool = False
 
     enable_sequence_shard: bool = False
+    return_file_paths_only: bool = False
 
     def _set_output_file_ext(self):
         # add extension if needed
@@ -751,6 +752,12 @@ class SamplingParams:
             action="store_true",
             default=SamplingParams.enable_sequence_shard,
             help="Enable sequence dimension shard with sequence parallelism.",
+        )
+        parser.add_argument(
+            "--return-file-paths-only",
+            action="store_true",
+            default=SamplingParams.return_file_paths_only,
+            help="If set, only return the file paths instead of the tensors.",
         )
         return parser
 
