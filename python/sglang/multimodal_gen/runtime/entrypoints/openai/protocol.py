@@ -54,13 +54,13 @@ class VideoResponse(BaseModel):
     model: str = "sora-2"
     status: str = "queued"
     progress: int = 0
-    created_at: int = Field(default_factory=lambda: int(time.time()))
+    created_at: float = Field(default_factory=lambda: time.time())
     size: str = ""
     seconds: str = "4"
     quality: str = "standard"
     url: Optional[str] = None
     remixed_from_video_id: Optional[str] = None
-    completed_at: Optional[int] = None
+    completed_at: Optional[float] = None
     expires_at: Optional[int] = None
     error: Optional[Dict[str, Any]] = None
     file_path: Optional[str] = None

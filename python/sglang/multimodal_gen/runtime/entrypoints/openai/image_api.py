@@ -153,7 +153,7 @@ async def generations(
         request_id,
         {
             "id": request_id,
-            "created_at": int(time.time()),
+            "created_at": time.time(),
             "file_path": None if cloud_url else save_file_path,
             "url": cloud_url,
         },
@@ -291,7 +291,7 @@ async def edits(
         request_id,
         {
             "id": request_id,
-            "created_at": int(time.time()),
+            "created_at": time.time(),
             "file_path": None if cloud_url else save_file_path,
             "url": cloud_url,
             "input_image_paths": input_paths,  # Store all input image paths

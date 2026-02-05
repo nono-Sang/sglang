@@ -376,6 +376,9 @@ class SamplingParams:
                     )
                     logger.warning(error_msg)
 
+        self.enable_sequence_shard = server_args.enable_sequence_shard
+        self.return_file_paths_only = server_args.return_file_paths_only
+
         if self.enable_sequence_shard:
             self.adjust_frames = False
             logger.info(
@@ -754,18 +757,6 @@ class SamplingParams:
                 "and satisfy model temporal constraints. If disabled, tokens might be padded for SP."
                 "Default: true. Examples: --adjust-frames, --adjust-frames true, --adjust-frames false."
             ),
-        )
-        parser.add_argument(
-            "--enable-sequence-shard",
-            action="store_true",
-            default=SamplingParams.enable_sequence_shard,
-            help="Enable sequence dimension shard with sequence parallelism.",
-        )
-        parser.add_argument(
-            "--return-file-paths-only",
-            action="store_true",
-            default=SamplingParams.return_file_paths_only,
-            help="If set, only return the file paths instead of the tensors.",
         )
         parser.add_argument(
             "--resolution",

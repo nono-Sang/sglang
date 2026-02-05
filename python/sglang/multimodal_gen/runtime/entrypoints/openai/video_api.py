@@ -120,7 +120,7 @@ def _video_job_from_sampling(
         "model": req.model or "sora-2",
         "status": "queued",
         "progress": 0,
-        "created_at": int(time.time()),
+        "created_at": time.time(),
         "size": size_str,
         "seconds": str(seconds),
         "quality": "standard",
@@ -142,7 +142,7 @@ async def _dispatch_job_async(job_id: str, batch: Req) -> None:
         update_fields = {
             "status": "completed",
             "progress": 100,
-            "completed_at": int(time.time()),
+            "completed_at": time.time(),
             "url": cloud_url,
             "file_path": save_file_path if not cloud_url else None,
         }

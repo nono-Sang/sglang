@@ -351,6 +351,9 @@ class ServerArgs:
     # Logging
     log_level: str = "info"
 
+    enable_sequence_shard: bool = False
+    return_file_paths_only: bool = False
+
     @property
     def broker_port(self) -> int:
         return self.port + 1
@@ -764,6 +767,18 @@ class ServerArgs:
             default=ServerArgs.backend.value,
             help="The model backend to use. 'auto' prefers sglang native and falls back to diffusers. "
             "'sglang' uses native optimized implementation. 'diffusers' uses vanilla diffusers pipeline.",
+        )
+        parser.add_argument(
+            "--enable-sequence-shard",
+            action="store_true",
+            default=ServerArgs.enable_sequence_shard,
+            help="Enable sequence dimension shard with sequence parallelism.",
+        )
+        parser.add_argument(
+            "--return-file-paths-only",
+            action="store_true",
+            default=ServerArgs.return_file_paths_only,
+            help="If set, only return the file paths instead of the tensors.",
         )
         return parser
 
