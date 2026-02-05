@@ -156,6 +156,10 @@ class SamplingParams:
     enable_sequence_shard: bool = False
     return_file_paths_only: bool = False
 
+    # Resolution and aspect ratio for I2V/T2V
+    resolution: str | None = None
+    aspect_ratio: str | None = None
+
     def _set_output_file_ext(self):
         # add extension if needed
         if not any(
@@ -350,7 +354,11 @@ class SamplingParams:
 
         # Validate resolution against pipeline-specific supported resolutions
         if self.height is None and self.width is None:
-            if self.supported_resolutions is not None:
+            if self.resolution is not None and self.aspect_ratio is not None:
+                logger.info(
+                    f"Resolution and aspect ratio specified, height and width will be calculated based on them"
+                )
+            elif self.supported_resolutions is not None:
                 self.width, self.height = self.supported_resolutions[0]
                 logger.info(
                     f"Resolution unspecified, using default: {self.supported_resolutions[0]}"
@@ -758,6 +766,20 @@ class SamplingParams:
             action="store_true",
             default=SamplingParams.return_file_paths_only,
             help="If set, only return the file paths instead of the tensors.",
+        )
+        parser.add_argument(
+            "--resolution",
+            type=str,
+            default=SamplingParams.resolution,
+            choices=["480p", "580p", "720p"],
+            help="Target resolution for video generation. Options: 480p, 580p, 720p",
+        )
+        parser.add_argument(
+            "--aspect-ratio",
+            type=str,
+            default=SamplingParams.aspect_ratio,
+            choices=["auto", "16:9", "9:16", "1:1"],
+            help="Target aspect ratio for video generation. Options: auto, 16:9, 9:16, 1:1",
         )
         return parser
 
