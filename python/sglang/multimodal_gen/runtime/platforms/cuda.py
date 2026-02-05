@@ -201,6 +201,25 @@ class CudaPlatformBase(Platform):
                     "Sage Attention 3 backend is not installed (To install it, see https://github.com/thu-ml/SageAttention/tree/main/sageattention3_blackwell#installation). Falling back to Torch SDPA."
                 )
                 target_backend = AttentionBackendEnum.TORCH_SDPA
+        elif selected_backend == AttentionBackendEnum.LITE_ATTN:
+            try:
+                from lite_attention import LiteAttention  # noqa: F401
+
+                from sglang.multimodal_gen.runtime.layers.attention.backends.lite_attn import (  # noqa: F401
+                    LiteAttentionBackend,
+                )
+
+                supported_sizes = LiteAttentionBackend.get_supported_head_sizes()
+                if head_size not in supported_sizes:
+                    raise ValueError(
+                        f"LiteAttention does not support head size {head_size}."
+                    )
+
+                logger.info("Using LiteAttention backend")
+                return "sglang.multimodal_gen.runtime.layers.attention.backends.lite_attn.LiteAttentionBackend"
+            except ImportError as e:
+                logger.error("Failed to import LiteAttention backend: %s", str(e))
+                raise ImportError("LiteAttention backend is not installed.") from e
         elif selected_backend == AttentionBackendEnum.VIDEO_SPARSE_ATTN:
             try:
                 from vsa import block_sparse_attn  # noqa: F401
