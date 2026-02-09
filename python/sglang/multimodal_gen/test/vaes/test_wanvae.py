@@ -32,11 +32,14 @@ from sglang.multimodal_gen.runtime.models.vaes.wanvae import (
 backend = "nccl" if torch.cuda.is_available() else "gloo"
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+
 def set_envar(envar_map: dict):
     for k, v in envar_map.items():
         os.environ[k] = str(v)
 
+
 tmpfiles = []
+
 
 def tmpfile(obj: torch.Tensor | dict | None = None):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pt") as f:
@@ -45,10 +48,12 @@ def tmpfile(obj: torch.Tensor | dict | None = None):
         tmpfiles.append(f.name)
         return f.name
 
+
 def clear_tmpfiles():
     for filepath in tmpfiles:
         if os.path.exists(filepath):
             os.remove(filepath)
+
 
 @pytest.mark.parametrize("dim", [192, 384])
 @pytest.mark.parametrize("batch_size", [1])
@@ -60,7 +65,7 @@ def clear_tmpfiles():
     "kernel_size, padding",
     [
         (3, 1),
-    ]
+    ],
 )
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32, torch.float64])
 def test_wan_dist_conv_2d(
@@ -128,6 +133,7 @@ def test_wan_dist_conv_2d(
 
     clear_tmpfiles()
 
+
 @pytest.mark.parametrize("dim", [192, 384])
 @pytest.mark.parametrize("batch_size", [1])
 @pytest.mark.parametrize("height", [90])
@@ -138,8 +144,8 @@ def test_wan_dist_conv_2d(
     "kernel_size, padding",
     [
         (3, 1),
-        ((3, 1, 1), (1, 0, 0)), # time_conv
-    ]
+        ((3, 1, 1), (1, 0, 0)),  # time_conv
+    ],
 )
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32, torch.float64])
 def test_wan_dist_conv_3d(
@@ -217,20 +223,19 @@ def _test_dist_conv(
     output_file: str,
     dtype: torch.dtype,
 ):
-    set_envar({
-        "MASTER_ADDR": "localhost",
-        "MASTER_PORT": "43200",
-        "RANK": str(local_rank),
-        "LOCAL_RANK": str(local_rank),
-        "WORLD_SIZE": str(world_size)
-    })
+    set_envar(
+        {
+            "MASTER_ADDR": "localhost",
+            "MASTER_PORT": "43200",
+            "RANK": str(local_rank),
+            "LOCAL_RANK": str(local_rank),
+            "WORLD_SIZE": str(world_size),
+        }
+    )
 
     torch.cuda.set_device(local_rank)
     init_distributed_environment(
-        rank=local_rank,
-        local_rank=local_rank,
-        world_size=world_size,
-        backend=backend
+        rank=local_rank, local_rank=local_rank, world_size=world_size, backend=backend
     )
 
     initialize_model_parallel(
@@ -338,6 +343,7 @@ def test_wan_dist_resample(
 
     clear_tmpfiles()
 
+
 def _test_wan_dist_resample(
     local_rank: int,
     world_size: int,
@@ -351,20 +357,19 @@ def _test_wan_dist_resample(
     output_file: str,
     dtype: torch.dtype,
 ):
-    set_envar({
-        "MASTER_ADDR": "localhost",
-        "MASTER_PORT": "43200",
-        "RANK": str(local_rank),
-        "LOCAL_RANK": str(local_rank),
-        "WORLD_SIZE": str(world_size)
-    })
+    set_envar(
+        {
+            "MASTER_ADDR": "localhost",
+            "MASTER_PORT": "43200",
+            "RANK": str(local_rank),
+            "LOCAL_RANK": str(local_rank),
+            "WORLD_SIZE": str(world_size),
+        }
+    )
 
     torch.cuda.set_device(local_rank)
     init_distributed_environment(
-        rank=local_rank,
-        local_rank=local_rank,
-        world_size=world_size,
-        backend=backend
+        rank=local_rank, local_rank=local_rank, world_size=world_size, backend=backend
     )
 
     initialize_model_parallel(
@@ -386,7 +391,7 @@ def _test_wan_dist_resample(
     x = torch.load(input_data_file).to(current_device)
     padding_len = calc_padding_len(x, world_size=world_size, dim=-2)
     local_padded_height = (x.shape[-2] + padding_len) // world_size
-    local_target_height = local_padded_height * 2 # one time upsample with scale 2
+    local_target_height = local_padded_height * 2  # one time upsample with scale 2
     x_local = torch.chunk(x, world_size, dim=-2)[local_rank]
 
     out_local = resample(x_local).contiguous()
@@ -474,6 +479,7 @@ def test_wan_dist_residual_block(
 
     clear_tmpfiles()
 
+
 def _test_wan_dist_residual_block(
     local_rank: int,
     world_size: int,
@@ -487,20 +493,19 @@ def _test_wan_dist_residual_block(
     output_file: str,
     dtype,
 ):
-    set_envar({
-        "MASTER_ADDR": "localhost",
-        "MASTER_PORT": "43200",
-        "RANK": str(local_rank),
-        "LOCAL_RANK": str(local_rank),
-        "WORLD_SIZE": str(world_size)
-    })
+    set_envar(
+        {
+            "MASTER_ADDR": "localhost",
+            "MASTER_PORT": "43200",
+            "RANK": str(local_rank),
+            "LOCAL_RANK": str(local_rank),
+            "WORLD_SIZE": str(world_size),
+        }
+    )
 
     torch.cuda.set_device(local_rank)
     init_distributed_environment(
-        rank=local_rank,
-        local_rank=local_rank,
-        world_size=world_size,
-        backend=backend
+        rank=local_rank, local_rank=local_rank, world_size=world_size, backend=backend
     )
 
     initialize_model_parallel(
@@ -510,7 +515,7 @@ def _test_wan_dist_residual_block(
         ulysses_degree=ulysses_degree,
         ring_degree=ring_degree,
         sequence_parallel_degree=sequence_parallel_size,
-        backend=backend
+        backend=backend,
     )
 
     global device
@@ -518,12 +523,14 @@ def _test_wan_dist_residual_block(
 
     residual_block = WanDistResidualBlock(in_dim, out_dim)
     residual_block.load_state_dict(torch.load(saved_model_file))
-    residual_block = residual_block.eval().requires_grad_(False).to(current_device).to(dtype)
+    residual_block = (
+        residual_block.eval().requires_grad_(False).to(current_device).to(dtype)
+    )
 
     x = torch.load(input_data_file).to(current_device)
     padding_len = calc_padding_len(x, world_size=world_size, dim=-2)
     local_padded_height = (x.shape[-2] + padding_len) // world_size
-    x_local = torch.chunk(x,  world_size, dim=-2)[local_rank]
+    x_local = torch.chunk(x, world_size, dim=-2)[local_rank]
 
     out_local = residual_block(x_local)
 
@@ -539,6 +546,7 @@ def _test_wan_dist_residual_block(
             torch.save(actual, f)
 
     destroy_distributed_environment()
+
 
 @pytest.mark.parametrize("batch_size", [1])
 @pytest.mark.parametrize("dim", [192])
@@ -604,6 +612,7 @@ def test_wan_dist_mid_block(
 
     clear_tmpfiles()
 
+
 def _test_wan_dist_mid_block(
     local_rank: int,
     world_size: int,
@@ -616,20 +625,19 @@ def _test_wan_dist_mid_block(
     actual_output_file: str,
     dtype: torch.dtype,
 ):
-    set_envar({
-        "MASTER_ADDR": "localhost",
-        "MASTER_PORT": "43210",
-        "RANK": str(local_rank),
-        "LOCAL_RANK": str(local_rank),
-        "WORLD_SIZE": str(world_size)
-    })
+    set_envar(
+        {
+            "MASTER_ADDR": "localhost",
+            "MASTER_PORT": "43210",
+            "RANK": str(local_rank),
+            "LOCAL_RANK": str(local_rank),
+            "WORLD_SIZE": str(world_size),
+        }
+    )
 
     torch.cuda.set_device(local_rank)
     init_distributed_environment(
-        rank=local_rank,
-        local_rank=local_rank,
-        world_size=world_size,
-        backend=backend
+        rank=local_rank, local_rank=local_rank, world_size=world_size, backend=backend
     )
 
     initialize_model_parallel(
@@ -639,7 +647,7 @@ def _test_wan_dist_mid_block(
         ulysses_degree=ulysses_degree,
         ring_degree=ring_degree,
         sequence_parallel_degree=sequence_parallel_size,
-        backend=backend
+        backend=backend,
     )
 
     global device
@@ -647,7 +655,9 @@ def _test_wan_dist_mid_block(
 
     dist_mid_block = WanDistMidBlock(dim, dropout=0.0, num_layers=1)
     dist_mid_block.load_state_dict(torch.load(saved_model_file))
-    dist_mid_block = dist_mid_block.eval().requires_grad_(False).to(current_device).to(dtype)
+    dist_mid_block = (
+        dist_mid_block.eval().requires_grad_(False).to(current_device).to(dtype)
+    )
 
     x = torch.load(input_data_file).to(current_device).to(dtype)
 
@@ -667,6 +677,7 @@ def _test_wan_dist_mid_block(
         torch.save(actual, actual_output_file)
 
     destroy_distributed_environment()
+
 
 @pytest.mark.parametrize("batch_size", [1])
 @pytest.mark.parametrize("height", [90])
@@ -749,20 +760,19 @@ def _test_wan_parallel_decoder(
     output_file: str,
     dtype: torch.dtype,
 ):
-    set_envar({
-        "MASTER_ADDR": "localhost",
-        "MASTER_PORT": "43210",
-        "RANK": str(local_rank),
-        "LOCAL_RANK": str(local_rank),
-        "WORLD_SIZE": str(world_size)
-    })
+    set_envar(
+        {
+            "MASTER_ADDR": "localhost",
+            "MASTER_PORT": "43210",
+            "RANK": str(local_rank),
+            "LOCAL_RANK": str(local_rank),
+            "WORLD_SIZE": str(world_size),
+        }
+    )
 
     torch.cuda.set_device(local_rank)
     init_distributed_environment(
-        rank=local_rank,
-        local_rank=local_rank,
-        world_size=world_size,
-        backend=backend
+        rank=local_rank, local_rank=local_rank, world_size=world_size, backend=backend
     )
 
     initialize_model_parallel(
@@ -772,7 +782,7 @@ def _test_wan_parallel_decoder(
         ulysses_degree=ulysses_degree,
         ring_degree=ring_degree,
         sequence_parallel_degree=sequence_parallel_size,
-        backend=backend
+        backend=backend,
     )
 
     global device
@@ -793,7 +803,9 @@ def _test_wan_parallel_decoder(
         use_parallel_decode=True,
     )
     parallel_decoder.load_state_dict(torch.load(saved_model_file))
-    parallel_decoder = parallel_decoder.eval().requires_grad_(False).to(current_device).to(dtype)
+    parallel_decoder = (
+        parallel_decoder.eval().requires_grad_(False).to(current_device).to(dtype)
+    )
 
     z = torch.load(input_data_file).to(current_device)
 

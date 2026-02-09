@@ -610,7 +610,15 @@ class PipelineConfig:
         return pipeline_config
 
     def check_pipeline_config(self) -> None:
-        if self.vae_config.use_parallel_decode and not isinstance(self, WanVAEConfig):
+        if self.vae_config.use_parallel_encode and not isinstance(
+            self.vae_config, WanVAEConfig
+        ):
+            raise ValueError(
+                "Currently vae_parallel_encode supported for model Wan, please set --vae-config.use-parallel-encode to False."
+            )
+        if self.vae_config.use_parallel_decode and not isinstance(
+            self.vae_config, WanVAEConfig
+        ):
             raise ValueError(
                 "Currently vae_parallel_decode supported for model Wan, please set --vae-config.use-parallel-decode to False."
             )
